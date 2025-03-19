@@ -31,6 +31,6 @@ object FirstCatsEffectApp extends IOApp {
 object MySimpleApp extends IOApp.Simple {
 
   import IOApps._
-  
+
   override def run: IO[Unit] = program
 }
