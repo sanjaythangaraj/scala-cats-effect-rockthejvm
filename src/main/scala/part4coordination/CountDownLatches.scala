@@ -2,7 +2,7 @@ package part4coordination
 
 import cats.effect.kernel.Resource
 import cats.effect.std.CountDownLatch
-import cats.effect.{IO, IOApp}
+import cats.effect.{Deferred, IO, IOApp, Ref}
 
 import scala.concurrent.duration.*
 import scala.language.postfixOps
@@ -84,7 +84,7 @@ object CountDownLatches extends IOApp.Simple{
     }
   }
 
-  def createFileDownloaderTask(id: Int, latch: CountDownLatch[IO], filename: String, destFolder: String): IO[Unit] = for {
+  def createFileDownloaderTask(id: Int, latch: CDLatch, filename: String, destFolder: String): IO[Unit] = for {
     _ <- IO(s"[task $id] downloading chunk...").debugLog
     _ <- IO.sleep((Random().nextDouble() * 1000).toInt millis)
     chunk <- FileServer.getFileChunk(id)
@@ -103,7 +103,7 @@ object CountDownLatches extends IOApp.Simple{
 
   def downloadFile(filename: String, destFolder: String): IO[Unit] = for {
     n <- FileServer.getNumChunks
-    latch <- CountDownLatch[IO](n)
+    latch <- CDLatch(n)
     _ <- IO(s"Download started on $n fibers.").debugLog
     contentsList <- (0 until n).toList.parTraverse { id => createFileDownloaderTask(id, latch, filename, destFolder) }
     _ <- latch.await
@@ -111,4 +111,36 @@ object CountDownLatches extends IOApp.Simple{
   } yield ()
 
   override def run: IO[Unit] = downloadFile("myScalafile.txt", "src/main/resources")
+
+  /*
+    Exercise: implement CountDownLatch with Ref and Deferred
+   */
+
+  abstract class CDLatch {
+    def await: IO[Unit]
+    def release: IO[Unit]
+  }
+
+  object CDLatch {
+
+    sealed trait State
+    case object Done extends State
+    case class Live(countLeft: Int, signal: Deferred[IO, Unit]) extends State
+
+    def apply(count: Int): IO[CDLatch] = for {
+      signal <- Deferred[IO, Unit]
+      state <- Ref[IO].of[State](Live(count, signal))
+    } yield new CDLatch {
+
+      override def await: IO[Unit] = state.get flatMap { state =>
+        if (state == Done) IO.unit // continue, the latch is dead
+        else signal.get // block here
+      }
+      override def release: IO[Unit] = state.modify {
+        case Done => Done -> IO.unit
+        case Live(1, signal) => Done -> signal.complete(()).void
+        case Live(n, signal) => Live(n-1, signal) -> IO.unit
+      }.flatten.uncancelable
+    }
+  }
 }
